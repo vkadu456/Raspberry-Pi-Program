@@ -1,0 +1,161 @@
+import spidev  # To communicate with MCP3008
+import RPi.GPIO as GPIO  # To control the LCD
+from time import sleep
+
+# SPI initialization for MCP3008
+spi = spidev.SpiDev()
+spi.open(0, 0)  # Open SPI bus 0, device (CS) 0
+spi.max_speed_hz = 1350000  # Set the SPI clock speed
+
+# LCD pin configuration
+LCD_RS = 18
+LCD_E = 23
+LCD_D4 = 24
+LCD_D5 = 25
+LCD_D6 = 12
+LCD_D7 = 16
+
+# LCD commands
+LCD_CHR = True  # Character mode
+LCD_CMD = False  # Command mode
+LCD_LINE_1 = 0x80  # LCD RAM address for the 1st line
+LCD_LINE_2 = 0xC0  # LCD RAM address for the 2nd line
+E_PULSE = 0.0002  # Reduced pulse delay
+E_DELAY = 0.0002  # Reduced general delay
+
+# GPIO setup
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(LCD_E, GPIO.OUT)
+GPIO.setup(LCD_RS, GPIO.OUT)
+GPIO.setup(LCD_D4, GPIO.OUT)
+GPIO.setup(LCD_D5, GPIO.OUT)
+GPIO.setup(LCD_D6, GPIO.OUT)
+GPIO.setup(LCD_D7, GPIO.OUT)
+
+def lcd_init():
+    lcd_byte(0x33, LCD_CMD)
+    lcd_byte(0x32, LCD_CMD)
+    lcd_byte(0x28, LCD_CMD)
+    lcd_byte(0x0C, LCD_CMD)
+    lcd_byte(0x06, LCD_CMD)
+    lcd_byte(0x01, LCD_CMD)
+    sleep(E_DELAY)
+
+def lcd_byte(bits, mode):
+    GPIO.output(LCD_RS, mode)
+    GPIO.output(LCD_D4, False)
+    GPIO.output(LCD_D5, False)
+    GPIO.output(LCD_D6, False)
+    GPIO.output(LCD_D7, False)
+    
+    if bits & 0x10 == 0x10:
+        GPIO.output(LCD_D4, True)
+    if bits & 0x20 == 0x20:
+        GPIO.output(LCD_D5, True)
+    if bits & 0x40 == 0x40:
+        GPIO.output(LCD_D6, True)
+    if bits & 0x80 == 0x80:
+        GPIO.output(LCD_D7, True)
+    
+    lcd_toggle_enable()
+    
+    GPIO.output(LCD_D4, False)
+    GPIO.output(LCD_D5, False)
+    GPIO.output(LCD_D6, False)
+    GPIO.output(LCD_D7, False)
+    
+    if bits & 0x01 == 0x01:
+        GPIO.output(LCD_D4, True)
+    if bits & 0x02 == 0x02:
+        GPIO.output(LCD_D5, True)
+    if bits & 0x04 == 0x04:
+        GPIO.output(LCD_D6, True)
+    if bits & 0x08 == 0x08:
+        GPIO.output(LCD_D7, True)
+    
+    lcd_toggle_enable()
+
+def lcd_toggle_enable():
+    sleep(E_DELAY)
+    GPIO.output(LCD_E, True)
+    sleep(E_PULSE)
+    GPIO.output(LCD_E, False)
+    sleep(E_DELAY)
+
+def lcd_string(message, line):
+    message = message.ljust(16, " ")  # Pad message to 16 characters
+    lcd_byte(line, LCD_CMD)
+    for i in range(16):
+        lcd_byte(ord(message[i]), LCD_CHR)
+
+# Function to scroll a message
+def scroll_message(message, line, delay=0.001):
+    message = message + " " * 16  # Add spaces to allow scrolling off the screen
+    for i in range(len(message) - 15):  # Loop to shift message
+        lcd_string(message[i:i+16], line)
+        sleep(delay)
+
+# Function to read from MCP3008
+def read_adc(channel):
+    adc = spi.xfer2([1, (8 + channel) << 4, 0])
+    data = ((adc[1] & 3) << 8) + adc[2]
+    return data
+
+# Initialize LCD
+lcd_init()
+
+# Scroll the "Welcome" message on line 1
+scroll_message("Welcome to the system!", LCD_LINE_1)
+
+# Threshold for flex sensor activation (you may adjust based on testing)
+THRESHOLD = 512
+flex_display_time = 1 # Display flex sensor messages for 1seconds
+
+try:
+    while True:
+        # Read temperature from LM35 sensor (channel 5)
+        lm35_value = read_adc(5)
+        temperature_celsius = (lm35_value * 3.3 / 1023) * 100  # Convert ADC value to Celsius
+        
+        # Read heart rate sensor value from channel 4
+        heart_rate_value = read_adc(4)
+        heart_rate_bpm = (heart_rate_value / 1023) * 100  # Example conversion
+        
+        # Read values from four flex sensors (channels 0, 1, 2, and 3 of MCP3008)
+        flex1_value = read_adc(0)
+        flex2_value = read_adc(1)
+        flex3_value = read_adc(2)
+        flex4_value = read_adc(3)
+        
+        # Check if any flex sensor is activated
+        flex_active = False
+        if flex1_value > THRESHOLD:
+            lcd_string("Food Needed", LCD_LINE_1)
+            flex_active = True
+        elif flex2_value > THRESHOLD:
+            lcd_string("Water Needed", LCD_LINE_1)
+            flex_active = True
+        elif flex3_value > THRESHOLD:
+            lcd_string("Washroom Needed", LCD_LINE_1)
+            flex_active = True
+        elif flex4_value > THRESHOLD:
+            lcd_string("Help Needed", LCD_LINE_1)
+            flex_active = True
+        
+        # If any flex sensor is activated, show its message for a few seconds
+        if flex_active:
+            sleep(flex_display_time)
+        else:
+            # Otherwise, show the temperature on the first line
+            lcd_string("Temp: " + str(round(temperature_celsius, 1)) + "C", LCD_LINE_1)
+        
+        # Always display heart rate on the second line
+        lcd_string("HR: " + str(int(heart_rate_bpm)) + " BPM", LCD_LINE_2)
+        
+        sleep(0.2)  # Loop delay
+
+except KeyboardInterrupt:
+    pass
+finally:
+    GPIO.cleanup()
+    spi.close()
